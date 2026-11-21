@@ -43,6 +43,13 @@ max_images = 1500
 max_gb = 20
 # Wallhaven sort orders walked in turn: favorites, toplist, views, date_added
 sortings = ["favorites", "toplist", "views"]
+
+# Non-anime library (Wallhaven "general" + "people" categories) and its share of rotations.
+other_library = "~/Pictures/Wallpapers/other"
+other_categories = "101"
+other_share = 20
+other_max_images = 400
+other_max_gb = 6
 """
 
 
@@ -53,7 +60,16 @@ def load_config():
     cfg = tomllib.loads(DEFAULT_CONFIG) | tomllib.loads(CONFIG.read_text())
     cfg["api_key"] = os.environ.get("WALLHAVEN_API_KEY") or cfg["api_key"]
     cfg["library"] = Path(cfg["library"]).expanduser()
+    cfg["other_library"] = Path(cfg["other_library"]).expanduser()
     return cfg
+
+
+def sources(cfg):
+    """(name, library dir, wallhaven categories, max images, max GB, share of rotations)"""
+    share = cfg["other_share"]
+    return [("anime", cfg["library"], "010", cfg["max_images"], cfg["max_gb"], 100 - share),
+            ("other", cfg["other_library"], cfg["other_categories"],
+             cfg["other_max_images"], cfg["other_max_gb"], share)]
 
 
 def log(*a):
@@ -95,7 +111,12 @@ def library_files(lib, purities=("sfw", "sketchy", "nsfw")):
 
 
 def fetch(cfg):
-    lib = cfg["library"]
+    for name, lib, cats, max_images, max_gb, _ in sources(cfg):
+        log(f"== {name} ==")
+        fetch_source(cfg, lib, cats, max_images, max_gb)
+
+
+def fetch_source(cfg, lib, categories, max_images, max_gb):
     purities = [p for p in cfg["purities"] if p in PURITY_BITS]
     if "nsfw" in purities and not cfg["api_key"]:
         log("no API key set, skipping NSFW (see", CONFIG, ")")
@@ -106,17 +127,17 @@ def fetch(cfg):
 
     have = {p.stem.removeprefix("wallhaven-") for p in library_files(lib)}
     size = sum(p.stat().st_size for p in library_files(lib))
-    max_bytes = cfg["max_gb"] * 1024**3
+    max_bytes = max_gb * 1024**3
     api = Api(cfg["api_key"])
     log(f"library has {len(have)} images ({size / 1024**3:.1f} GB), purity={purity}")
 
     def full():
-        return len(have) >= cfg["max_images"] or size >= max_bytes
+        return len(have) >= max_images or size >= max_bytes
 
     for sorting in cfg["sortings"]:
         page, last = 1, 1
         while page <= last and not full():
-            res = api.get("/search", categories="010", purity=purity,
+            res = api.get("/search", categories=categories, purity=purity,
                           atleast=cfg["min_resolution"], ratios=cfg["ratios"],
                           sorting=sorting, order="desc", page=page)
             last = res["meta"]["last_page"]
@@ -147,7 +168,7 @@ def fetch(cfg):
                     continue
                 have.add(wid)
                 size += info["file_size"]
-                log(f"[{len(have)}/{cfg['max_images']}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
+                log(f"[{len(have)}/{max_images}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
             page += 1
     log(f"done: {len(have)} images, {size / 1024**3:.1f} GB in {lib}")
 
@@ -174,11 +195,14 @@ def hypr_env():
 
 def next_wallpaper(cfg):
     purities = rotate_purities()
-    files = library_files(cfg["library"], purities)
-    if not files:
+    pools = [(name, library_files(lib, purities), share)
+             for name, lib, _, _, _, share in sources(cfg)]
+    pools = [p for p in pools if p[1] and p[2] > 0]
+    if not pools:
         sys.exit("library is empty, run: animewall fetch")
+    name, files, _ = random.choices(pools, weights=[p[2] for p in pools])[0]
     STATE.mkdir(parents=True, exist_ok=True)
-    qfile = STATE / "queue.json"
+    qfile = STATE / f"queue-{name}.json"
     queue = json.loads(qfile.read_text()) if qfile.exists() else []
     valid = {str(p) for p in files}
     queue = [q for q in queue if q in valid]
@@ -202,12 +226,13 @@ def main():
     elif cmd == "mode" and len(sys.argv) == 3 and sys.argv[2] in ("sfw", "all"):
         STATE.mkdir(parents=True, exist_ok=True)
         (STATE / "mode").write_text(sys.argv[2])
-        (STATE / "queue.json").unlink(missing_ok=True)
+        for q in STATE.glob("queue*.json"):
+            q.unlink()
         next_wallpaper(cfg)
     elif cmd == "status":
-        for p in PURITY_BITS:
-            n = len(library_files(cfg["library"], (p,)))
-            print(f"{p:8} {n} images")
+        for name, lib, _, _, _, share in sources(cfg):
+            counts = ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITY_BITS)
+            print(f"{name:6} ({share}% of rotations): {counts}")
         print("rotating:", ", ".join(rotate_purities()))
         print("api key:", "set" if cfg["api_key"] else "missing (no NSFW)")
     else:
