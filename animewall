@@ -50,6 +50,10 @@ other_categories = "101"
 other_share = 20
 other_max_images = 400
 other_max_gb = 6
+# Search terms for the non-anime library, each searched in turn per sort order with
+# other_exclude added ("-tag" leaves a tag out). No terms searches the whole categories.
+other_queries = []
+other_exclude = ""
 """
 
 
@@ -64,12 +68,18 @@ def load_config():
     return cfg
 
 
+def other_searches(cfg):
+    """The non-anime library's searches: each of other_queries with other_exclude added."""
+    exclude = cfg["other_exclude"]
+    return [f"{q} {exclude}".strip() for q in cfg["other_queries"]] or [exclude]
+
+
 def sources(cfg):
-    """(name, library dir, wallhaven categories, max images, max GB, share of rotations)"""
+    """(name, library dir, wallhaven categories, max images, max GB, share, queries)"""
     share = cfg["other_share"]
-    return [("anime", cfg["library"], "010", cfg["max_images"], cfg["max_gb"], 100 - share),
+    return [("anime", cfg["library"], "010", cfg["max_images"], cfg["max_gb"], 100 - share, [""]),
             ("other", cfg["other_library"], cfg["other_categories"],
-             cfg["other_max_images"], cfg["other_max_gb"], share)]
+             cfg["other_max_images"], cfg["other_max_gb"], share, other_searches(cfg))]
 
 
 def log(*a):
@@ -111,12 +121,12 @@ def library_files(lib, purities=("sfw", "sketchy", "nsfw")):
 
 
 def fetch(cfg):
-    for name, lib, cats, max_images, max_gb, _ in sources(cfg):
+    for name, lib, cats, max_images, max_gb, _, queries in sources(cfg):
         log(f"== {name} ==")
-        fetch_source(cfg, lib, cats, max_images, max_gb)
+        fetch_source(cfg, lib, cats, max_images, max_gb, queries)
 
 
-def fetch_source(cfg, lib, categories, max_images, max_gb):
+def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
     purities = [p for p in cfg["purities"] if p in PURITY_BITS]
     if "nsfw" in purities and not cfg["api_key"]:
         log("no API key set, skipping NSFW (see", CONFIG, ")")
@@ -135,9 +145,11 @@ def fetch_source(cfg, lib, categories, max_images, max_gb):
         return len(have) >= max_images or size >= max_bytes
 
     for sorting in cfg["sortings"]:
+      for query in queries:
         page, last = 1, 1
+        log(f"  {sorting} / {query[:50]}")
         while page <= last and not full():
-            res = api.get("/search", categories=categories, purity=purity,
+            res = api.get("/search", q=query, categories=categories, purity=purity,
                           atleast=cfg["min_resolution"], ratios=cfg["ratios"],
                           sorting=sorting, order="desc", page=page)
             last = res["meta"]["last_page"]
@@ -196,7 +208,7 @@ def hypr_env():
 def next_wallpaper(cfg):
     purities = rotate_purities()
     pools = [(name, library_files(lib, purities), share)
-             for name, lib, _, _, _, share in sources(cfg)]
+             for name, lib, _, _, _, share, _ in sources(cfg)]
     pools = [p for p in pools if p[1] and p[2] > 0]
     if not pools:
         sys.exit("library is empty, run: animewall fetch")
@@ -230,7 +242,7 @@ def main():
             q.unlink()
         next_wallpaper(cfg)
     elif cmd == "status":
-        for name, lib, _, _, _, share in sources(cfg):
+        for name, lib, _, _, _, share, _ in sources(cfg):
             counts = ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITY_BITS)
             print(f"{name:6} ({share}% of rotations): {counts}")
         print("rotating:", ", ".join(rotate_purities()))
