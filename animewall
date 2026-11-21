@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""animewall: build an anime wallpaper library from Wallhaven and rotate it.
+
+  animewall fetch          grow the library up to the configured size
+  animewall next           switch to the next wallpaper (run by the timer)
+  animewall mode sfw|all   restrict rotation to SFW (e.g. before screen sharing) or allow all
+  animewall status         show library size and current settings
+
+Config: ~/.config/animewall/config.toml (created on first run).
+"""
+import json
+import os
+import random
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG = HOME / ".config/animewall/config.toml"
+STATE = HOME / ".local/state/animewall"
+API = "https://wallhaven.cc/api/v1"
+UA = "animewall/1.0"
+PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
+SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
+
+DEFAULT_CONFIG = """\
+# Wallhaven API key, needed for NSFW results: https://wallhaven.cc/settings/account
+# (also enable NSFW in your Wallhaven browsing settings). Or set WALLHAVEN_API_KEY.
+api_key = ""
+
+library = "~/Pictures/Wallpapers/anime"
+# Purities to download. "nsfw" is skipped automatically without an API key.
+purities = ["sfw", "sketchy", "nsfw"]
+min_resolution = "2560x1440"
+ratios = "16x10,16x9"
+# Stop when the library holds this many images or this many GB, whichever comes first.
+max_images = 1500
+max_gb = 20
+# Wallhaven sort orders walked in turn: favorites, toplist, views, date_added
+sortings = ["favorites", "toplist", "views"]
+"""
+
+
+def load_config():
+    if not CONFIG.exists():
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG.write_text(DEFAULT_CONFIG)
+    cfg = tomllib.loads(DEFAULT_CONFIG) | tomllib.loads(CONFIG.read_text())
+    cfg["api_key"] = os.environ.get("WALLHAVEN_API_KEY") or cfg["api_key"]
+    cfg["library"] = Path(cfg["library"]).expanduser()
+    return cfg
+
+
+def log(*a):
+    print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+class Api:
+    """Wallhaven allows 45 API calls a minute."""
+
+    def __init__(self, key):
+        self.key, self.last = key, 0.0
+
+    def get(self, path, **params):
+        if self.key:
+            params["apikey"] = self.key
+        url = f"{API}{path}?{urllib.parse.urlencode(params)}"
+        for attempt in range(5):
+            time.sleep(max(0, 1.4 - (time.time() - self.last)))
+            self.last = time.time()
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.load(r)
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    log("rate limited, waiting 60s")
+                    time.sleep(60)
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError) as e:
+                log(f"network error ({e}), retrying")
+                time.sleep(10 * (attempt + 1))
+        raise RuntimeError(f"giving up on {path}")
+
+
+def library_files(lib, purities=("sfw", "sketchy", "nsfw")):
+    return [p for d in purities if (lib / d).is_dir()
+            for p in (lib / d).iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")]
+
+
+def fetch(cfg):
+    lib = cfg["library"]
+    purities = [p for p in cfg["purities"] if p in PURITY_BITS]
+    if "nsfw" in purities and not cfg["api_key"]:
+        log("no API key set, skipping NSFW (see", CONFIG, ")")
+        purities.remove("nsfw")
+    for p in purities:
+        (lib / p).mkdir(parents=True, exist_ok=True)
+    purity = "".join("1" if any(PURITY_BITS[p][i] == "1" for p in purities) else "0" for i in range(3))
+
+    have = {p.stem.removeprefix("wallhaven-") for p in library_files(lib)}
+    size = sum(p.stat().st_size for p in library_files(lib))
+    max_bytes = cfg["max_gb"] * 1024**3
+    api = Api(cfg["api_key"])
+    log(f"library has {len(have)} images ({size / 1024**3:.1f} GB), purity={purity}")
+
+    def full():
+        return len(have) >= cfg["max_images"] or size >= max_bytes
+
+    for sorting in cfg["sortings"]:
+        page, last = 1, 1
+        while page <= last and not full():
+            res = api.get("/search", categories="010", purity=purity,
+                          atleast=cfg["min_resolution"], ratios=cfg["ratios"],
+                          sorting=sorting, order="desc", page=page)
+            last = res["meta"]["last_page"]
+            for w in res["data"]:
+                if full():
+                    break
+                wid = w["id"]
+                if wid in have or w["purity"] not in purities:
+                    continue
+                try:
+                    info = api.get(f"/w/{wid}")["data"]
+                except Exception as e:
+                    log(f"skip {wid}: detail lookup failed ({e})")
+                    continue
+                dest = lib / info["purity"] / Path(urllib.parse.urlparse(info["path"]).path).name
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                try:
+                    req = urllib.request.Request(info["path"], headers={"User-Agent": UA})
+                    with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+                        while chunk := r.read(1 << 20):
+                            f.write(chunk)
+                    if tmp.stat().st_size != info["file_size"]:
+                        raise IOError("size mismatch")
+                    tmp.rename(dest)
+                except Exception as e:
+                    tmp.unlink(missing_ok=True)
+                    log(f"download failed {wid}: {e}")
+                    continue
+                have.add(wid)
+                size += info["file_size"]
+                log(f"[{len(have)}/{cfg['max_images']}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
+            page += 1
+    log(f"done: {len(have)} images, {size / 1024**3:.1f} GB in {lib}")
+
+
+def rotate_purities():
+    f = STATE / "mode"
+    return ("sfw",) if f.exists() and f.read_text().strip() == "sfw" else ("sfw", "sketchy", "nsfw")
+
+
+def hypr_env():
+    env = dict(os.environ)
+    run = Path(env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    sig = env.get("HYPRLAND_INSTANCE_SIGNATURE")
+    if not sig or not (run / "hypr" / sig).exists():
+        dirs = sorted((run / "hypr").glob("*"), key=lambda p: p.stat().st_mtime)
+        if dirs:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = dirs[-1].name
+    if not env.get("WAYLAND_DISPLAY"):
+        socks = sorted(run.glob("wayland-[0-9]"))
+        if socks:
+            env["WAYLAND_DISPLAY"] = socks[0].name
+    return env
+
+
+def next_wallpaper(cfg):
+    purities = rotate_purities()
+    files = library_files(cfg["library"], purities)
+    if not files:
+        sys.exit("library is empty, run: animewall fetch")
+    STATE.mkdir(parents=True, exist_ok=True)
+    qfile = STATE / "queue.json"
+    queue = json.loads(qfile.read_text()) if qfile.exists() else []
+    valid = {str(p) for p in files}
+    queue = [q for q in queue if q in valid]
+    if not queue:  # shuffle bag: every image shows once before any repeats
+        queue = sorted(valid)
+        random.shuffle(queue)
+    pick = queue.pop()
+    qfile.write_text(json.dumps(queue))
+    subprocess.run([str(SWITCHWALL), "--image", pick], env=hypr_env(), check=True,
+                   stdout=subprocess.DEVNULL)
+    print(pick)
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    cfg = load_config()
+    if cmd == "fetch":
+        fetch(cfg)
+    elif cmd == "next":
+        next_wallpaper(cfg)
+    elif cmd == "mode" and len(sys.argv) == 3 and sys.argv[2] in ("sfw", "all"):
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / "mode").write_text(sys.argv[2])
+        (STATE / "queue.json").unlink(missing_ok=True)
+        next_wallpaper(cfg)
+    elif cmd == "status":
+        for p in PURITY_BITS:
+            n = len(library_files(cfg["library"], (p,)))
+            print(f"{p:8} {n} images")
+        print("rotating:", ", ".join(rotate_purities()))
+        print("api key:", "set" if cfg["api_key"] else "missing (no NSFW)")
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
