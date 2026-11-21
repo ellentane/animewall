@@ -1,0 +1,7 @@
+[Unit]
+Description=Switch to the next anime wallpaper
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/animewall next
