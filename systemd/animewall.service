@@ -5,3 +5,6 @@ After=graphical-session.target
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/animewall next
+# the wallpaper switch themes the terminals and the shell in background jobs that outlive this
+# command; the default (control-group) killed them half way, leaving kitty a theme it cannot load
+KillMode=process
