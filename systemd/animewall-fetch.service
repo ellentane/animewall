@@ -1,0 +1,9 @@
+[Unit]
+Description=Grow the anime wallpaper library from Wallhaven
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=%h/.local/bin/animewall fetch
