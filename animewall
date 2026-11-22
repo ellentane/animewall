@@ -185,9 +185,13 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
     log(f"done: {len(have)} images, {size / 1024**3:.1f} GB in {lib}")
 
 
-def rotate_purities():
+def rotate_purities(cfg):
+    # Only rotate purities that are both configured and allowed by the current mode.
+    configured = tuple(p for p in ("sfw", "sketchy", "nsfw") if p in cfg["purities"])
     f = STATE / "mode"
-    return ("sfw",) if f.exists() and f.read_text().strip() == "sfw" else ("sfw", "sketchy", "nsfw")
+    if f.exists() and f.read_text().strip() == "sfw":
+        return ("sfw",) if "sfw" in configured else ()
+    return configured
 
 
 def hypr_env():
@@ -206,7 +210,7 @@ def hypr_env():
 
 
 def next_wallpaper(cfg):
-    purities = rotate_purities()
+    purities = rotate_purities(cfg)
     pools = [(name, library_files(lib, purities), share)
              for name, lib, _, _, _, share, _ in sources(cfg)]
     pools = [p for p in pools if p[1] and p[2] > 0]
@@ -245,7 +249,7 @@ def main():
         for name, lib, _, _, _, share, _ in sources(cfg):
             counts = ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITY_BITS)
             print(f"{name:6} ({share}% of rotations): {counts}")
-        print("rotating:", ", ".join(rotate_purities()))
+        print("rotating:", ", ".join(rotate_purities(cfg)))
         print("api key:", "set" if cfg["api_key"] else "missing (no NSFW)")
     else:
         print(__doc__)
