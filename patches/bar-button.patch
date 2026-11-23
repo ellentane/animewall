@@ -1,5 +1,6 @@
-A button for the animewall panel in the bar's utility group, hidden with
-bar.utilButtons.showAnimewall.
+A button for the animewall panel just left of the tray: click opens the
+panel, right click switches to the next wallpaper and middle click
+favorites it. bar.utilButtons.showAnimewall hides it.
 Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
 
 --- a/modules/common/Config.qml
@@ -12,28 +13,44 @@ Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
                  }
                  property JsonObject workspaces: JsonObject {
                      property bool monochromeIcons: true
---- a/modules/ii/bar/UtilButtons.qml
-+++ b/modules/ii/bar/UtilButtons.qml
-@@ -21,6 +21,22 @@
-         anchors.centerIn: parent
+--- a/modules/ii/bar/BarContent.qml
++++ b/modules/ii/bar/BarContent.qml
+@@ -324,6 +324,38 @@
+                 invertSide: Config?.options.bar.bottom
+             }
  
-         Loader {
-+            active: Config.options.bar.utilButtons.showAnimewall
-+            visible: Config.options.bar.utilButtons.showAnimewall
-+            sourceComponent: CircleUtilButton {
++            Loader { // Anime wallpaper panel (left click), next wallpaper (right click), favorite (middle click)
++                active: Config.options.bar.utilButtons.showAnimewall
++                visible: active
++                Layout.fillWidth: false
 +                Layout.alignment: Qt.AlignVCenter
-+                onClicked: GlobalStates.animewallOpen = !GlobalStates.animewallOpen
-+                MaterialSymbol {
-+                    horizontalAlignment: Qt.AlignHCenter
-+                    fill: GlobalStates.animewallOpen ? 1 : 0
-+                    text: "photo_library"
-+                    iconSize: Appearance.font.pixelSize.large
-+                    color: Appearance.colors.colOnLayer2
++                sourceComponent: RippleButton {
++                    id: animewallButton
++                    implicitWidth: 30
++                    implicitHeight: 30
++                    buttonRadius: Appearance.rounding.full
++                    toggled: GlobalStates.animewallOpen
++                    colBackgroundToggled: Appearance.colors.colSecondaryContainer
++                    colBackgroundToggledHover: Appearance.colors.colSecondaryContainerHover
++                    colRippleToggled: Appearance.colors.colSecondaryContainerActive
++                    onClicked: GlobalStates.animewallOpen = !GlobalStates.animewallOpen
++                    altAction: () => Animewall.skip()
++                    middleClickAction: () => Animewall.toggleFavorite()
++                    contentItem: Item {
++                        MaterialSymbol {
++                            anchors.centerIn: parent
++                            text: "photo_library"
++                            fill: animewallButton.toggled ? 1 : 0
++                            iconSize: Appearance.font.pixelSize.larger
++                            color: animewallButton.toggled ? Appearance.colors.colOnSecondaryContainer : Appearance.colors.colOnLayer0
++                        }
++                    }
++                    StyledToolTip {
++                        text: "Wallpapers · click: panel · right-click: next · middle-click: favorite"
++                    }
 +                }
 +            }
-+        }
 +
-+        Loader {
-             active: Config.options.bar.utilButtons.showScreenSnip
-             visible: Config.options.bar.utilButtons.showScreenSnip
-             sourceComponent: CircleUtilButton {
+             Item {
+                 Layout.fillWidth: true
+                 Layout.fillHeight: true
