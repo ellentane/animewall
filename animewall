@@ -6,6 +6,7 @@
                                           choose which library rotates
   animewall purity sfw|sketchy|nsfw ...   choose which purities rotate ("all" for every one)
   animewall favorite                      add or remove the current wallpaper from favorites
+  animewall ban                           take the current wallpaper out for good (moved, not deleted)
   animewall status                        the selection and the library sizes
   animewall fetch                         grow the libraries in the foreground
 
@@ -30,6 +31,8 @@ CONFIG = HOME / ".config/animewall/config.toml"
 STATE = HOME / ".local/state/animewall"
 FILTER = STATE / "filter.json"
 QUEUE = STATE / "queue.json"
+REJECTED = STATE / "rejected.json"
+BANNED = STATE / "banned"
 CURRENT = HOME / ".config/illogical-impulse/config.json"
 SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
 API = "https://wallhaven.cc/api/v1"
@@ -149,6 +152,15 @@ def library_files(lib, purities=PURITIES):
 
 # ---- downloads -------------------------------------------------------------
 
+def load_rejected():
+    return set(json.loads(REJECTED.read_text())) if REJECTED.exists() else set()
+
+
+def add_rejected(wid):
+    STATE.mkdir(parents=True, exist_ok=True)
+    REJECTED.write_text(json.dumps(sorted(load_rejected() | {wid})))
+
+
 def fetch(cfg):
     for name, lib, cats, max_images, max_gb, queries in source_specs(cfg):
         log(f"== {name} ==")
@@ -164,6 +176,7 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
         (lib / p).mkdir(parents=True, exist_ok=True)
     purity = "".join("1" if any(PURITY_BITS[p][i] == "1" for p in purities) else "0" for i in range(3))
 
+    rejected = load_rejected()
     have = {p.stem.removeprefix("wallhaven-") for p in library_files(lib)}
     size = sum(p.stat().st_size for p in library_files(lib))
     max_bytes = max_gb * 1024**3
@@ -186,7 +199,7 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
                     if full():
                         break
                     wid = w["id"]
-                    if wid in have or w["purity"] not in purities:
+                    if wid in have or wid in rejected or w["purity"] not in purities:
                         continue
                     try:
                         info = api.get(f"/w/{wid}")["data"]
@@ -402,6 +415,29 @@ def cmd_favorite(cfg):
     return 0
 
 
+def cmd_ban(cfg):
+    cur = current_path()
+    loc = locate(cfg, cur)
+    wid = wallhaven_id(cur)
+    if not cur or not loc or not wid:
+        notify("Only wallpapers from the animewall libraries can be banned.", urgent=True)
+        return 1
+    pick = choose(cfg, load_filter(), exclude=cur)
+    if pick is None:
+        notify("Nothing else to switch to, so the ban was cancelled.", urgent=True)
+        return 1
+    show(pick)
+    add_rejected(wid)
+    BANNED.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for lib in libraries(cfg).values():
+        for f in lib.glob(f"*/wallhaven-{wid}.*"):
+            shutil.move(str(f), BANNED / f.name)
+            moved += 1
+    notify(f"Banned {wid}: moved {moved} file(s) to {BANNED}")
+    return 0
+
+
 def cmd_status(cfg):
     filt = load_filter()
     pool = sum(len(files) for _, files, _ in pools(cfg, filt))
@@ -428,6 +464,8 @@ def main(argv):
         return cmd_purity(cfg, args)
     if cmd == "favorite":
         return cmd_favorite(cfg)
+    if cmd == "ban":
+        return cmd_ban(cfg)
     print(__doc__)
     return 2
 
