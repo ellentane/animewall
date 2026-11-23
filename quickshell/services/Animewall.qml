@@ -17,6 +17,7 @@ Singleton {
 
     readonly property string binary: `${FileUtils.trimFileProtocol(Directories.home)}/.local/bin/animewall`
     property var status: null
+    readonly property bool loaded: status !== null
     readonly property var current: status?.current ?? null
     readonly property string source: status?.source ?? "anime"
     readonly property var purities: status?.purities ?? []
@@ -37,6 +38,8 @@ Singleton {
     ]
     readonly property var purityIds: ["sfw", "sketchy", "nsfw"]
     readonly property var intervals: [5, 10, 15, 30, 60]
+
+    Component.onCompleted: refresh()
 
     function refresh() {
         if (!statusProc.running)
