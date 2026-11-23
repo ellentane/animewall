@@ -204,13 +204,15 @@ def fetch(cfg):
     if not targets or not purities:
         log(f"nothing to download for {filt['source']} ({', '.join(filt['purities'])})")
         return
+    # An empty selection shows its first download right away instead of waiting for the timer.
+    state = {"waiting": not pools(cfg, filt)}
     for name, lib, cats, max_images, max_gb, queries in targets:
         for purity in purities:
             log(f"== {name} / {purity} ==")
-            fetch_source(cfg, lib, cats, max_images, max_gb, queries, purity)
+            fetch_source(cfg, lib, cats, max_images, max_gb, queries, purity, state)
 
 
-def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity):
+def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity, state):
     folder = lib / purity
     folder.mkdir(parents=True, exist_ok=True)
     for part in folder.glob("*.part"):  # leftovers from an interrupted download
@@ -265,6 +267,9 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity):
                     count += 1
                     size += info["file_size"]
                     log(f"[{count}/{max_images}] {purity:7} {info['resolution']:>9} {dest.name}")
+                    if state["waiting"]:
+                        state["waiting"] = False
+                        cmd_next(cfg)
                 page += 1
     log(f"done: {count} {purity} images, {size / 1024**3:.1f} GB in {lib}")
 
@@ -402,14 +407,19 @@ def cmd_next(cfg):
 
 
 def apply_selection(cfg, filt):
-    """Save the selection and switch to it. A running download restarts to follow it."""
-    pick = choose(cfg, filt)
-    if pick is None:
-        notify(f"No wallpapers for {filt['source']} with {', '.join(filt['purities'])} yet.", urgent=True)
+    """Save the selection and switch to it. An empty selection starts downloading for it."""
+    if filt["source"] == "favorites" and not pools(cfg, filt):
+        notify(f"No favorites match {' + '.join(p.upper() for p in filt['purities'])} yet. "
+               "Use Favorite on a wallpaper first.", urgent=True)
         return 1
     save_filter(filt)
-    if downloading():
+    pick = choose(cfg, filt)
+    if downloading() or pick is None:
         start_download()  # downloads always follow the selection
+    if pick is None:
+        notify(f"No {selection_label(filt)} wallpapers yet. Downloading some now; "
+               "the wallpaper changes when the first one arrives.")
+        return 0
     show(pick)
     return 0
 

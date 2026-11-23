@@ -226,7 +226,11 @@ Rectangle {
             Layout.fillWidth: true
             visible: Animewall.loaded && Animewall.pool === 0
             wrapMode: Text.WordWrap
-            text: "Nothing matches this selection yet. Pick another source or purity, or download more."
+            text: Animewall.downloading
+                ? "Downloading wallpapers for this selection. The wallpaper changes when the first one arrives."
+                : Animewall.source === "favorites"
+                    ? "No favorites match these purities yet. Use Favorite on a wallpaper you like."
+                    : "Nothing here yet. Press Download more to fetch some."
             font.pixelSize: Appearance.font.pixelSize.small
             color: Appearance.colors.colPrimary
         }
