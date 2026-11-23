@@ -7,6 +7,7 @@
   animewall purity sfw|sketchy|nsfw ...   choose which purities rotate ("all" for every one)
   animewall favorite                      add or remove the current wallpaper from favorites
   animewall ban                           take the current wallpaper out for good (moved, not deleted)
+  animewall open                          open the current wallpaper's Wallhaven page
   animewall status                        the selection and the library sizes
   animewall fetch                         grow the libraries in the foreground
 
@@ -438,6 +439,16 @@ def cmd_ban(cfg):
     return 0
 
 
+def cmd_open():
+    wid = wallhaven_id(current_path())
+    if not wid:
+        notify("This wallpaper has no Wallhaven page.", urgent=True)
+        return 1
+    subprocess.Popen(["xdg-open", f"https://wallhaven.cc/w/{wid}"], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
 def cmd_status(cfg):
     filt = load_filter()
     pool = sum(len(files) for _, files, _ in pools(cfg, filt))
@@ -466,6 +477,8 @@ def main(argv):
         return cmd_favorite(cfg)
     if cmd == "ban":
         return cmd_ban(cfg)
+    if cmd == "open":
+        return cmd_open()
     print(__doc__)
     return 2
 
