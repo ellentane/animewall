@@ -11,7 +11,7 @@
   animewall interval 5|10|15|30|60        minutes between automatic changes
   animewall pause | resume                stop or restart the rotation timer
   animewall download start|stop|run       background download service, or download in the foreground
-  animewall status                        the selection and the library sizes
+  animewall status [--json]               state, used by the quickshell panel
   animewall fetch                         grow the libraries in the foreground
 
 Config: ~/.config/animewall/config.toml (created on first run).
@@ -518,13 +518,54 @@ def cmd_download(cfg, args):
     return 0
 
 
-def cmd_status(cfg):
+def status_data(cfg):
     filt = load_filter()
-    pool = sum(len(files) for _, files, _ in pools(cfg, filt))
-    print("source:", filt["source"], "| purities:", ", ".join(filt["purities"]), "| pool:", pool)
-    for name, lib in libraries(cfg).items():
-        print(f"{name:10}", ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITIES))
-    print("api key:", "set" if cfg["api_key"] else "missing")
+    cur = current_path()
+    loc = locate(cfg, cur)
+    wid = wallhaven_id(cur)
+    counts = {name: {p: len(library_files(lib, (p,))) for p in PURITIES}
+              for name, lib in libraries(cfg).items()}
+    return {
+        "current": {
+            "path": cur,
+            "name": Path(cur).name,
+            "wallhaven_id": wid,
+            "library": loc[0] if loc else None,
+            "purity": loc[1] if loc else None,
+            "favorite": bool(wid and favorite_copies(cfg, wid)),
+        } if cur else None,
+        "source": filt["source"],
+        "purities": filt["purities"],
+        "pool": sum(len(files) for _, files, _ in pools(cfg, filt)),
+        "timer": {
+            "active": unit_state("animewall.timer") == "active",
+            "interval_min": interval_minutes(),
+            "next": systemctl("show", "animewall.timer", "-p", "NextElapseUSecRealtime", "--value")
+                    .stdout.strip() or None,
+        },
+        "download": unit_state("animewall-fetch.service") in ("active", "activating"),
+        "libraries": counts,
+        "banned": len(list(BANNED.iterdir())) if BANNED.is_dir() else 0,
+        "api_key": bool(cfg["api_key"]),
+    }
+
+
+def cmd_status(cfg, args):
+    data = status_data(cfg)
+    if "--json" in args:
+        print(json.dumps(data, ensure_ascii=False))
+        return 0
+    cur = data["current"]
+    print("current:", f"{cur['name']} ({cur['library'] or 'outside libraries'}, "
+          f"{cur['purity'] or '-'}{', favorite' if cur['favorite'] else ''})" if cur else "none")
+    print("source:", data["source"], "| purities:", ", ".join(data["purities"]), "| pool:", data["pool"])
+    t = data["timer"]
+    print("rotation:", "active" if t["active"] else "paused", f"| every {t['interval_min']} min",
+          f"| next {t['next'] or '-'}")
+    print("download:", "running" if data["download"] else "idle")
+    for name, c in data["libraries"].items():
+        print(f"{name:10}", ", ".join(f"{p} {n}" for p, n in c.items()))
+    print("banned:", data["banned"], "| api key:", "set" if data["api_key"] else "missing")
     return 0
 
 
@@ -532,7 +573,7 @@ def main(argv):
     cmd, args = (argv[0], argv[1:]) if argv else ("status", [])
     cfg = load_config()
     if cmd == "status":
-        return cmd_status(cfg)
+        return cmd_status(cfg, args)
     if cmd == "next":
         return cmd_next(cfg)
     if cmd == "fetch":
