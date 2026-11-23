@@ -1,0 +1,39 @@
+A button for the animewall panel in the bar's utility group, hidden with
+bar.utilButtons.showAnimewall.
+Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
+
+--- a/modules/common/Config.qml
++++ b/modules/common/Config.qml
+@@ -257,6 +257,7 @@
+                     property bool showDarkModeToggle: true
+                     property bool showPerformanceProfileToggle: false
+                     property bool showScreenRecord: false
++                    property bool showAnimewall: true
+                 }
+                 property JsonObject workspaces: JsonObject {
+                     property bool monochromeIcons: true
+--- a/modules/ii/bar/UtilButtons.qml
++++ b/modules/ii/bar/UtilButtons.qml
+@@ -21,6 +21,22 @@
+         anchors.centerIn: parent
+ 
+         Loader {
++            active: Config.options.bar.utilButtons.showAnimewall
++            visible: Config.options.bar.utilButtons.showAnimewall
++            sourceComponent: CircleUtilButton {
++                Layout.alignment: Qt.AlignVCenter
++                onClicked: GlobalStates.animewallOpen = !GlobalStates.animewallOpen
++                MaterialSymbol {
++                    horizontalAlignment: Qt.AlignHCenter
++                    fill: GlobalStates.animewallOpen ? 1 : 0
++                    text: "photo_library"
++                    iconSize: Appearance.font.pixelSize.large
++                    color: Appearance.colors.colOnLayer2
++                }
++            }
++        }
++
++        Loader {
+             active: Config.options.bar.utilButtons.showScreenSnip
+             visible: Config.options.bar.utilButtons.showScreenSnip
+             sourceComponent: CircleUtilButton {
