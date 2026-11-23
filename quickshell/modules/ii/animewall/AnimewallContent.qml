@@ -100,6 +100,22 @@ Rectangle {
                     color: Appearance.colors.colSubtext
                 }
             }
+
+            RippleButton {
+                Layout.alignment: Qt.AlignTop
+                implicitWidth: 30
+                implicitHeight: 30
+                buttonRadius: Appearance.rounding.full
+                onClicked: GlobalStates.animewallOpen = false
+                contentItem: Item {
+                    MaterialSymbol {
+                        anchors.centerIn: parent
+                        text: "close"
+                        iconSize: 20
+                        color: Appearance.colors.colOnLayer1
+                    }
+                }
+            }
         }
 
         // Actions on the current wallpaper

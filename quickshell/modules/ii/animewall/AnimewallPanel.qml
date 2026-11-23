@@ -41,19 +41,9 @@ Scope {
                 item: content
             }
 
-            Component.onCompleted: {
-                GlobalFocusGrab.addDismissable(panelWindow);
-                Animewall.refresh();
-            }
-            Component.onDestruction: {
-                GlobalFocusGrab.removeDismissable(panelWindow);
-            }
-            Connections {
-                target: GlobalFocusGrab
-                function onDismissed() {
-                    GlobalStates.animewallOpen = false;
-                }
-            }
+            // No shared focus grab: it closed the panel on the first click inside it.
+            // The panel closes only via the bar button, its close button, or Esc.
+            Component.onCompleted: Animewall.refresh()
 
             // Keep the numbers fresh while the panel is open
             Timer {
