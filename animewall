@@ -56,9 +56,8 @@ DEFAULT_CONFIG = """\
 # (also enable NSFW in your Wallhaven browsing settings). Or set WALLHAVEN_API_KEY.
 api_key = ""
 
-# Downloads. "purities" only decides what gets downloaded; rotation uses the panel's selection.
+# Downloads always follow the panel's selection (source and purities).
 library = "~/Pictures/Wallpapers/anime"
-purities = ["sfw", "sketchy", "nsfw"]
 min_resolution = "2560x1440"
 ratios = "16x10,16x9"
 # Caps: each purity folder stops at max_images, and the whole library at max_gb.
@@ -177,13 +176,35 @@ def add_rejected(wid):
     REJECTED.write_text(json.dumps(sorted(load_rejected() | {wid})))
 
 
+FETCH_UNIT = "animewall-fetch.service"
+
+
+def downloading():
+    return unit_state(FETCH_UNIT) in ("active", "activating")
+
+
+def start_download():
+    """Start the download service, or restart it so it follows a changed selection."""
+    systemctl("restart" if downloading() else "start", "--no-block", FETCH_UNIT)
+
+
+def download_targets(cfg, filt):
+    names = {"anime": ["anime"], "real": ["real"], "mixed": ["anime", "real"], "favorites": []}[filt["source"]]
+    return [spec for spec in source_specs(cfg) if spec[0] in names]
+
+
 def fetch(cfg):
-    """Download every library, each configured purity up to its own cap."""
-    purities = [p for p in cfg["purities"] if p in PURITY_BITS]
+    """Download for the current selection: its libraries and purities, each purity up to its cap."""
+    filt = load_filter()
+    purities = list(filt["purities"])
     if "nsfw" in purities and not cfg["api_key"]:
         log("no API key set, skipping NSFW (see", CONFIG, ")")
         purities.remove("nsfw")
-    for name, lib, cats, max_images, max_gb, queries in source_specs(cfg):
+    targets = download_targets(cfg, filt)
+    if not targets or not purities:
+        log(f"nothing to download for {filt['source']} ({', '.join(filt['purities'])})")
+        return
+    for name, lib, cats, max_images, max_gb, queries in targets:
         for purity in purities:
             log(f"== {name} / {purity} ==")
             fetch_source(cfg, lib, cats, max_images, max_gb, queries, purity)
@@ -364,6 +385,10 @@ def favorite_copies(cfg, wid):
 
 # ---- commands --------------------------------------------------------------
 
+def selection_label(filt):
+    return f"{filt['source']} {' + '.join(p.upper() for p in filt['purities'])}"
+
+
 def cmd_next(cfg):
     filt = load_filter()
     pick = choose(cfg, filt)
@@ -376,19 +401,26 @@ def cmd_next(cfg):
     return 0
 
 
+def apply_selection(cfg, filt):
+    """Save the selection and switch to it. A running download restarts to follow it."""
+    pick = choose(cfg, filt)
+    if pick is None:
+        notify(f"No wallpapers for {filt['source']} with {', '.join(filt['purities'])} yet.", urgent=True)
+        return 1
+    save_filter(filt)
+    if downloading():
+        start_download()  # downloads always follow the selection
+    show(pick)
+    return 0
+
+
 def cmd_source(cfg, args):
     if len(args) != 1 or args[0] not in SOURCES:
         print(f"usage: animewall source {'|'.join(SOURCES)}")
         return 2
     filt = load_filter()
     filt["source"] = args[0]
-    pick = choose(cfg, filt)
-    if pick is None:
-        notify(f"No wallpapers for {args[0]} with {', '.join(filt['purities'])} yet.", urgent=True)
-        return 1
-    save_filter(filt)
-    show(pick)
-    return 0
+    return apply_selection(cfg, filt)
 
 
 def cmd_purity(cfg, args):
@@ -401,13 +433,7 @@ def cmd_purity(cfg, args):
         return 2
     filt = load_filter()
     filt["purities"] = wanted
-    pick = choose(cfg, filt)
-    if pick is None:
-        notify(f"No wallpapers for {filt['source']} with {', '.join(wanted)} yet.", urgent=True)
-        return 1
-    save_filter(filt)
-    show(pick)
-    return 0
+    return apply_selection(cfg, filt)
 
 
 def cmd_favorite(cfg):
@@ -510,10 +536,13 @@ def cmd_timer(action):
 def cmd_download(cfg, args):
     action = args[0] if args else ""
     if action == "start":
-        systemctl("start", "--no-block", "animewall-fetch.service")
-        print("download started")
+        if not download_targets(cfg, load_filter()):
+            notify("Favorites can't be downloaded. Pick Anime, Real or Mixed first.", urgent=True)
+            return 1
+        start_download()
+        print("download started for", selection_label(load_filter()))
     elif action == "stop":
-        systemctl("stop", "animewall-fetch.service")
+        systemctl("stop", FETCH_UNIT)
         print("download stopped")
     elif action == "run":
         fetch(cfg)
@@ -548,7 +577,7 @@ def status_data(cfg):
             "next": systemctl("show", "animewall.timer", "-p", "NextElapseUSecRealtime", "--value")
                     .stdout.strip() or None,
         },
-        "download": unit_state("animewall-fetch.service") in ("active", "activating"),
+        "download": downloading(),
         "libraries": counts,
         "banned": len(list(BANNED.iterdir())) if BANNED.is_dir() else 0,
         "api_key": bool(cfg["api_key"]),

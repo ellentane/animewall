@@ -217,6 +217,7 @@ Rectangle {
                 label: Animewall.downloading ? "Stop downloads" : "Download more"
                 iconName: Animewall.downloading ? "stop" : "cloud_download"
                 toggled: Animewall.downloading
+                enabled: Animewall.downloading || Animewall.source !== "favorites"
                 onClicked: Animewall.toggleDownload()
             }
         }
