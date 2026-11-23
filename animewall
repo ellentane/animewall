@@ -8,6 +8,8 @@
   animewall favorite                      add or remove the current wallpaper from favorites
   animewall ban                           take the current wallpaper out for good (moved, not deleted)
   animewall open                          open the current wallpaper's Wallhaven page
+  animewall interval 5|10|15|30|60        minutes between automatic changes
+  animewall pause | resume                stop or restart the rotation timer
   animewall status                        the selection and the library sizes
   animewall fetch                         grow the libraries in the foreground
 
@@ -34,6 +36,9 @@ FILTER = STATE / "filter.json"
 QUEUE = STATE / "queue.json"
 REJECTED = STATE / "rejected.json"
 BANNED = STATE / "banned"
+UNIT_DIR = HOME / ".config/systemd/user"
+TIMER_UNIT = UNIT_DIR / "animewall.timer"
+TIMER_DROPIN = UNIT_DIR / "animewall.timer.d/interval.conf"
 CURRENT = HOME / ".config/illogical-impulse/config.json"
 SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
 API = "https://wallhaven.cc/api/v1"
@@ -41,6 +46,7 @@ UA = "animewall/1.0"
 PURITIES = ("sfw", "sketchy", "nsfw")
 PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
 SOURCES = ("anime", "real", "mixed", "favorites")
+INTERVALS = (5, 10, 15, 30, 60)
 DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"]}
 WALLHAVEN_FILE = re.compile(r"wallhaven-([a-z0-9]+)\.\w+$", re.I)
 
@@ -115,6 +121,14 @@ def notify(msg, urgent=False):
     cmd = ["notify-send", "-a", "animewall", *(["-u", "critical"] if urgent else []), msg]
     subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(msg)
+
+
+def systemctl(*args):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
+
+
+def unit_state(unit):
+    return systemctl("is-active", unit).stdout.strip()
 
 
 class Api:
@@ -449,6 +463,44 @@ def cmd_open():
     return 0
 
 
+def interval_minutes():
+    for f in (TIMER_DROPIN, TIMER_UNIT):
+        try:
+            text = f.read_text()
+        except OSError:
+            continue
+        if "OnCalendar=hourly" in text:
+            return 60
+        m = re.search(r"OnCalendar=\*:0/(\d+)", text)
+        if m:
+            return int(m.group(1))
+    return 5
+
+
+def cmd_interval(args):
+    try:
+        n = int(args[0])
+    except (IndexError, ValueError):
+        n = None
+    if n not in INTERVALS:
+        print(f"usage: animewall interval {'|'.join(map(str, INTERVALS))}")
+        return 2
+    TIMER_DROPIN.parent.mkdir(parents=True, exist_ok=True)
+    spec = "hourly" if n == 60 else f"*:0/{n}"
+    TIMER_DROPIN.write_text(f"[Timer]\nOnCalendar=\nOnCalendar={spec}\n")
+    systemctl("daemon-reload")
+    if unit_state("animewall.timer") == "active":
+        systemctl("restart", "animewall.timer")
+    print(f"changing every {n} minutes")
+    return 0
+
+
+def cmd_timer(action):
+    r = systemctl(action, "animewall.timer")
+    print("rotation " + ("paused" if action == "stop" else "resumed"))
+    return r.returncode
+
+
 def cmd_status(cfg):
     filt = load_filter()
     pool = sum(len(files) for _, files, _ in pools(cfg, filt))
@@ -479,6 +531,10 @@ def main(argv):
         return cmd_ban(cfg)
     if cmd == "open":
         return cmd_open()
+    if cmd == "interval":
+        return cmd_interval(args)
+    if cmd in ("pause", "resume"):
+        return cmd_timer("stop" if cmd == "pause" else "start")
     print(__doc__)
     return 2
 
