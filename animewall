@@ -2,8 +2,10 @@
 """animewall: Wallhaven wallpaper libraries with rotation and controls.
 
   animewall next                          switch to a random wallpaper from the current selection
-  animewall source anime|real|mixed       choose which library rotates
+  animewall source anime|real|mixed|favorites
+                                          choose which library rotates
   animewall purity sfw|sketchy|nsfw ...   choose which purities rotate ("all" for every one)
+  animewall favorite                      add or remove the current wallpaper from favorites
   animewall status                        the selection and the library sizes
   animewall fetch                         grow the libraries in the foreground
 
@@ -12,6 +14,8 @@ Config: ~/.config/animewall/config.toml (created on first run).
 import json
 import os
 import random
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -26,13 +30,15 @@ CONFIG = HOME / ".config/animewall/config.toml"
 STATE = HOME / ".local/state/animewall"
 FILTER = STATE / "filter.json"
 QUEUE = STATE / "queue.json"
+CURRENT = HOME / ".config/illogical-impulse/config.json"
 SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
 API = "https://wallhaven.cc/api/v1"
 UA = "animewall/1.0"
 PURITIES = ("sfw", "sketchy", "nsfw")
 PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
-SOURCES = ("anime", "real", "mixed")
+SOURCES = ("anime", "real", "mixed", "favorites")
 DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"]}
+WALLHAVEN_FILE = re.compile(r"wallhaven-([a-z0-9]+)\.\w+$", re.I)
 
 DEFAULT_CONFIG = """\
 # Wallhaven API key, needed for NSFW results: https://wallhaven.cc/settings/account
@@ -62,6 +68,8 @@ other_exclude = ""
 
 # Share of "mixed" rotations that come from the non-anime library (the rest from anime).
 mixed_real_share = 20
+# Favorites are copies kept apart from the downloaded libraries.
+favorites_library = "~/Pictures/Wallpapers/favorites"
 """
 
 
@@ -71,13 +79,13 @@ def load_config():
         CONFIG.write_text(DEFAULT_CONFIG)
     cfg = tomllib.loads(DEFAULT_CONFIG) | tomllib.loads(CONFIG.read_text())
     cfg["api_key"] = os.environ.get("WALLHAVEN_API_KEY") or cfg["api_key"]
-    for key in ("library", "other_library"):
+    for key in ("library", "other_library", "favorites_library"):
         cfg[key] = Path(cfg[key]).expanduser()
     return cfg
 
 
 def libraries(cfg):
-    return {"anime": cfg["library"], "real": cfg["other_library"]}
+    return {"anime": cfg["library"], "real": cfg["other_library"], "favorites": cfg["favorites_library"]}
 
 
 def other_searches(cfg):
@@ -242,12 +250,12 @@ def pools(cfg, filt):
     return out
 
 
-def choose(cfg, filt):
+def choose(cfg, filt, exclude=None):
     """Next wallpaper: each library works through a shuffled bag, so nothing repeats until all have shown."""
     key = json.dumps([filt["source"], filt["purities"]])
     options = []
     for name, files, weight in pools(cfg, filt):
-        valid = {str(p) for p in files}
+        valid = {str(p) for p in files} - {exclude}
         if valid:
             options.append((name, valid, weight))
     if not options:
@@ -284,6 +292,40 @@ def hypr_env():
         if socks:
             env["WAYLAND_DISPLAY"] = socks[0].name
     return env
+
+
+# ---- current wallpaper -----------------------------------------------------
+
+def current_path():
+    try:
+        p = json.loads(CURRENT.read_text())["background"]["wallpaperPath"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return str(Path(p)) if p else None
+
+
+def locate(cfg, path):
+    """(library name, purity) for a file inside one of our libraries, else None."""
+    if not path:
+        return None
+    for name, lib in libraries(cfg).items():
+        try:
+            rel = Path(path).relative_to(lib)
+        except ValueError:
+            continue
+        if len(rel.parts) == 2 and rel.parts[0] in PURITIES:
+            return name, rel.parts[0]
+    return None
+
+
+def wallhaven_id(path):
+    m = WALLHAVEN_FILE.search(Path(path).name) if path else None
+    return m.group(1).lower() if m else None
+
+
+def favorite_copies(cfg, wid):
+    fav = cfg["favorites_library"]
+    return [p for p in fav.glob(f"*/wallhaven-{wid}.*")] if fav.is_dir() else []
 
 
 # ---- commands --------------------------------------------------------------
@@ -334,6 +376,32 @@ def cmd_purity(cfg, args):
     return 0
 
 
+def cmd_favorite(cfg):
+    cur = current_path()
+    loc = locate(cfg, cur)
+    wid = wallhaven_id(cur)
+    if not cur or not loc or not wid:
+        notify("Only wallpapers from the animewall libraries can be favorited.", urgent=True)
+        return 1
+    copies = favorite_copies(cfg, wid)
+    if copies:  # already a favorite: remove it
+        if cur in {str(c) for c in copies}:
+            pick = choose(cfg, load_filter(), exclude=cur)
+            if pick is None:
+                notify("Nothing else to switch to, so the favorite stays.", urgent=True)
+                return 1
+            show(pick)
+        for c in copies:
+            c.unlink(missing_ok=True)
+        notify(f"Removed {wid} from favorites")
+        return 0
+    dest = cfg["favorites_library"] / loc[1] / Path(cur).name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cur, dest)
+    notify(f"Saved {wid} to favorites")
+    return 0
+
+
 def cmd_status(cfg):
     filt = load_filter()
     pool = sum(len(files) for _, files, _ in pools(cfg, filt))
@@ -358,6 +426,8 @@ def main(argv):
         return cmd_source(cfg, args)
     if cmd in ("purity", "mode"):  # "mode" kept as an alias
         return cmd_purity(cfg, args)
+    if cmd == "favorite":
+        return cmd_favorite(cfg)
     print(__doc__)
     return 2
 
