@@ -398,9 +398,14 @@ def cmd_next(cfg):
     filt = load_filter()
     pick = choose(cfg, filt)
     if pick is None:
-        notify(f"No wallpapers for {filt['source']} ({', '.join(filt['purities'])}). Download some first.",
-               urgent=True)
-        return 1
+        msg = f"No {selection_label(filt)} wallpapers yet."
+        if downloading():
+            print(msg, "Still downloading; keeping the current wallpaper.")
+        elif os.environ.get("INVOCATION_ID"):  # run by the timer: no popup every few minutes
+            print(msg)
+        else:
+            notify(msg + " Press Download more in the panel.")
+        return 0 if downloading() or os.environ.get("INVOCATION_ID") else 1
     show(pick)
     print(pick)
     return 0
