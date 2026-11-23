@@ -255,6 +255,8 @@ Rectangle {
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         implicitHeight: 34
+        leftPadding: 2
+        rightPadding: 2
         buttonRadius: Appearance.rounding.full
 
         contentItem: Item {
