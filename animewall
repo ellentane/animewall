@@ -61,7 +61,7 @@ library = "~/Pictures/Wallpapers/anime"
 purities = ["sfw", "sketchy", "nsfw"]
 min_resolution = "2560x1440"
 ratios = "16x10,16x9"
-# Stop when the library holds this many images or this many GB, whichever comes first.
+# Caps: each purity folder stops at max_images, and the whole library at max_gb.
 max_images = 1500
 max_gb = 20
 # Wallhaven sort orders walked in turn.
@@ -70,7 +70,7 @@ sortings = ["favorites", "toplist", "views"]
 # Non-anime library (Wallhaven "general" + "people" categories).
 other_library = "~/Pictures/Wallpapers/other"
 other_categories = "101"
-other_max_images = 400
+other_max_images = 400   # per purity, like max_images
 other_max_gb = 6
 # Search terms for the non-anime library, each searched in turn per sort order with
 # other_exclude added ("-tag" leaves a tag out). No terms searches the whole categories.
@@ -178,36 +178,38 @@ def add_rejected(wid):
 
 
 def fetch(cfg):
-    for name, lib, cats, max_images, max_gb, queries in source_specs(cfg):
-        log(f"== {name} ==")
-        fetch_source(cfg, lib, cats, max_images, max_gb, queries)
-
-
-def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
+    """Download every library, each configured purity up to its own cap."""
     purities = [p for p in cfg["purities"] if p in PURITY_BITS]
     if "nsfw" in purities and not cfg["api_key"]:
         log("no API key set, skipping NSFW (see", CONFIG, ")")
         purities.remove("nsfw")
-    for p in purities:
-        (lib / p).mkdir(parents=True, exist_ok=True)
-    purity = "".join("1" if any(PURITY_BITS[p][i] == "1" for p in purities) else "0" for i in range(3))
+    for name, lib, cats, max_images, max_gb, queries in source_specs(cfg):
+        for purity in purities:
+            log(f"== {name} / {purity} ==")
+            fetch_source(cfg, lib, cats, max_images, max_gb, queries, purity)
 
+
+def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity):
+    folder = lib / purity
+    folder.mkdir(parents=True, exist_ok=True)
+    for part in folder.glob("*.part"):  # leftovers from an interrupted download
+        part.unlink(missing_ok=True)
     rejected = load_rejected()
     have = {p.stem.removeprefix("wallhaven-") for p in library_files(lib)}
+    count = len(library_files(lib, (purity,)))
     size = sum(p.stat().st_size for p in library_files(lib))
     max_bytes = max_gb * 1024**3
     api = Api(cfg["api_key"])
-    log(f"library has {len(have)} images ({size / 1024**3:.1f} GB), purity={purity}")
+    log(f"{count}/{max_images} {purity} images, library {size / 1024**3:.1f}/{max_gb} GB")
 
     def full():
-        return len(have) >= max_images or size >= max_bytes
+        return count >= max_images or size >= max_bytes
 
     for sorting in cfg["sortings"]:
         for query in queries:
             page, last = 1, 1
-            log(f"  {sorting} / {query[:50]}")
             while page <= last and not full():
-                res = api.get("/search", q=query, categories=categories, purity=purity,
+                res = api.get("/search", q=query, categories=categories, purity=PURITY_BITS[purity],
                               atleast=cfg["min_resolution"], ratios=cfg["ratios"],
                               sorting=sorting, order="desc", page=page)
                 last = res["meta"]["last_page"]
@@ -215,14 +217,16 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
                     if full():
                         break
                     wid = w["id"]
-                    if wid in have or wid in rejected or w["purity"] not in purities:
+                    if wid in have or wid in rejected or w["purity"] != purity:
                         continue
                     try:
                         info = api.get(f"/w/{wid}")["data"]
                     except Exception as e:
                         log(f"skip {wid}: detail lookup failed ({e})")
                         continue
-                    dest = lib / info["purity"] / Path(urllib.parse.urlparse(info["path"]).path).name
+                    if info["purity"] != purity:
+                        continue
+                    dest = folder / Path(urllib.parse.urlparse(info["path"]).path).name
                     tmp = dest.with_suffix(dest.suffix + ".part")
                     try:
                         req = urllib.request.Request(info["path"], headers={"User-Agent": UA})
@@ -237,10 +241,11 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
                         log(f"download failed {wid}: {e}")
                         continue
                     have.add(wid)
+                    count += 1
                     size += info["file_size"]
-                    log(f"[{len(have)}/{max_images}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
+                    log(f"[{count}/{max_images}] {purity:7} {info['resolution']:>9} {dest.name}")
                 page += 1
-    log(f"done: {len(have)} images, {size / 1024**3:.1f} GB in {lib}")
+    log(f"done: {count} {purity} images, {size / 1024**3:.1f} GB in {lib}")
 
 
 # ---- selection -------------------------------------------------------------
