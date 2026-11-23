@@ -15,7 +15,7 @@ Rectangle {
     id: root
     readonly property int padding: 14
 
-    implicitWidth: 460
+    implicitWidth: 500
     implicitHeight: body.implicitHeight + root.padding * 2
     radius: Appearance.rounding.windowRounding
     color: Appearance.colors.colLayer0
