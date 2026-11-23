@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""animewall: build an anime wallpaper library from Wallhaven and rotate it.
+"""animewall: Wallhaven wallpaper libraries with rotation and controls.
 
-  animewall fetch          grow the library up to the configured size
-  animewall next           switch to the next wallpaper (run by the timer)
-  animewall mode sfw|all   restrict rotation to SFW (e.g. before screen sharing) or allow all
-  animewall status         show library size and current settings
+  animewall next                          switch to a random wallpaper from the current selection
+  animewall source anime|real|mixed       choose which library rotates
+  animewall purity sfw|sketchy|nsfw ...   choose which purities rotate ("all" for every one)
+  animewall status                        the selection and the library sizes
+  animewall fetch                         grow the libraries in the foreground
 
 Config: ~/.config/animewall/config.toml (created on first run).
 """
@@ -23,37 +24,44 @@ from pathlib import Path
 HOME = Path.home()
 CONFIG = HOME / ".config/animewall/config.toml"
 STATE = HOME / ".local/state/animewall"
+FILTER = STATE / "filter.json"
+QUEUE = STATE / "queue.json"
+SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
 API = "https://wallhaven.cc/api/v1"
 UA = "animewall/1.0"
+PURITIES = ("sfw", "sketchy", "nsfw")
 PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
-SWITCHWALL = HOME / ".config/quickshell/ii/scripts/colors/switchwall.sh"
+SOURCES = ("anime", "real", "mixed")
+DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"]}
 
 DEFAULT_CONFIG = """\
 # Wallhaven API key, needed for NSFW results: https://wallhaven.cc/settings/account
 # (also enable NSFW in your Wallhaven browsing settings). Or set WALLHAVEN_API_KEY.
 api_key = ""
 
+# Downloads. "purities" only decides what gets downloaded; rotation uses the panel's selection.
 library = "~/Pictures/Wallpapers/anime"
-# Purities to download. "nsfw" is skipped automatically without an API key.
 purities = ["sfw", "sketchy", "nsfw"]
 min_resolution = "2560x1440"
 ratios = "16x10,16x9"
 # Stop when the library holds this many images or this many GB, whichever comes first.
 max_images = 1500
 max_gb = 20
-# Wallhaven sort orders walked in turn: favorites, toplist, views, date_added
+# Wallhaven sort orders walked in turn.
 sortings = ["favorites", "toplist", "views"]
 
-# Non-anime library (Wallhaven "general" + "people" categories) and its share of rotations.
+# Non-anime library (Wallhaven "general" + "people" categories).
 other_library = "~/Pictures/Wallpapers/other"
 other_categories = "101"
-other_share = 20
 other_max_images = 400
 other_max_gb = 6
 # Search terms for the non-anime library, each searched in turn per sort order with
 # other_exclude added ("-tag" leaves a tag out). No terms searches the whole categories.
 other_queries = []
 other_exclude = ""
+
+# Share of "mixed" rotations that come from the non-anime library (the rest from anime).
+mixed_real_share = 20
 """
 
 
@@ -63,9 +71,13 @@ def load_config():
         CONFIG.write_text(DEFAULT_CONFIG)
     cfg = tomllib.loads(DEFAULT_CONFIG) | tomllib.loads(CONFIG.read_text())
     cfg["api_key"] = os.environ.get("WALLHAVEN_API_KEY") or cfg["api_key"]
-    cfg["library"] = Path(cfg["library"]).expanduser()
-    cfg["other_library"] = Path(cfg["other_library"]).expanduser()
+    for key in ("library", "other_library"):
+        cfg[key] = Path(cfg[key]).expanduser()
     return cfg
+
+
+def libraries(cfg):
+    return {"anime": cfg["library"], "real": cfg["other_library"]}
 
 
 def other_searches(cfg):
@@ -74,16 +86,23 @@ def other_searches(cfg):
     return [f"{q} {exclude}".strip() for q in cfg["other_queries"]] or [exclude]
 
 
-def sources(cfg):
-    """(name, library dir, wallhaven categories, max images, max GB, share, queries)"""
-    share = cfg["other_share"]
-    return [("anime", cfg["library"], "010", cfg["max_images"], cfg["max_gb"], 100 - share, [""]),
-            ("other", cfg["other_library"], cfg["other_categories"],
-             cfg["other_max_images"], cfg["other_max_gb"], share, other_searches(cfg))]
+def source_specs(cfg):
+    """(name, dir, wallhaven categories, max images, max GB, search queries) for the downloads."""
+    return [
+        ("anime", cfg["library"], "010", cfg["max_images"], cfg["max_gb"], [""]),
+        ("real", cfg["other_library"], cfg["other_categories"], cfg["other_max_images"],
+         cfg["other_max_gb"], other_searches(cfg)),
+    ]
 
 
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+def notify(msg, urgent=False):
+    cmd = ["notify-send", "-a", "animewall", *(["-u", "critical"] if urgent else []), msg]
+    subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(msg)
 
 
 class Api:
@@ -115,13 +134,15 @@ class Api:
         raise RuntimeError(f"giving up on {path}")
 
 
-def library_files(lib, purities=("sfw", "sketchy", "nsfw")):
+def library_files(lib, purities=PURITIES):
     return [p for d in purities if (lib / d).is_dir()
             for p in (lib / d).iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")]
 
 
+# ---- downloads -------------------------------------------------------------
+
 def fetch(cfg):
-    for name, lib, cats, max_images, max_gb, _, queries in sources(cfg):
+    for name, lib, cats, max_images, max_gb, queries in source_specs(cfg):
         log(f"== {name} ==")
         fetch_source(cfg, lib, cats, max_images, max_gb, queries)
 
@@ -145,53 +166,109 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries):
         return len(have) >= max_images or size >= max_bytes
 
     for sorting in cfg["sortings"]:
-      for query in queries:
-        page, last = 1, 1
-        log(f"  {sorting} / {query[:50]}")
-        while page <= last and not full():
-            res = api.get("/search", q=query, categories=categories, purity=purity,
-                          atleast=cfg["min_resolution"], ratios=cfg["ratios"],
-                          sorting=sorting, order="desc", page=page)
-            last = res["meta"]["last_page"]
-            for w in res["data"]:
-                if full():
-                    break
-                wid = w["id"]
-                if wid in have or w["purity"] not in purities:
-                    continue
-                try:
-                    info = api.get(f"/w/{wid}")["data"]
-                except Exception as e:
-                    log(f"skip {wid}: detail lookup failed ({e})")
-                    continue
-                dest = lib / info["purity"] / Path(urllib.parse.urlparse(info["path"]).path).name
-                tmp = dest.with_suffix(dest.suffix + ".part")
-                try:
-                    req = urllib.request.Request(info["path"], headers={"User-Agent": UA})
-                    with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
-                        while chunk := r.read(1 << 20):
-                            f.write(chunk)
-                    if tmp.stat().st_size != info["file_size"]:
-                        raise IOError("size mismatch")
-                    tmp.rename(dest)
-                except Exception as e:
-                    tmp.unlink(missing_ok=True)
-                    log(f"download failed {wid}: {e}")
-                    continue
-                have.add(wid)
-                size += info["file_size"]
-                log(f"[{len(have)}/{max_images}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
-            page += 1
+        for query in queries:
+            page, last = 1, 1
+            log(f"  {sorting} / {query[:50]}")
+            while page <= last and not full():
+                res = api.get("/search", q=query, categories=categories, purity=purity,
+                              atleast=cfg["min_resolution"], ratios=cfg["ratios"],
+                              sorting=sorting, order="desc", page=page)
+                last = res["meta"]["last_page"]
+                for w in res["data"]:
+                    if full():
+                        break
+                    wid = w["id"]
+                    if wid in have or w["purity"] not in purities:
+                        continue
+                    try:
+                        info = api.get(f"/w/{wid}")["data"]
+                    except Exception as e:
+                        log(f"skip {wid}: detail lookup failed ({e})")
+                        continue
+                    dest = lib / info["purity"] / Path(urllib.parse.urlparse(info["path"]).path).name
+                    tmp = dest.with_suffix(dest.suffix + ".part")
+                    try:
+                        req = urllib.request.Request(info["path"], headers={"User-Agent": UA})
+                        with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+                            while chunk := r.read(1 << 20):
+                                f.write(chunk)
+                        if tmp.stat().st_size != info["file_size"]:
+                            raise IOError("size mismatch")
+                        tmp.rename(dest)
+                    except Exception as e:
+                        tmp.unlink(missing_ok=True)
+                        log(f"download failed {wid}: {e}")
+                        continue
+                    have.add(wid)
+                    size += info["file_size"]
+                    log(f"[{len(have)}/{max_images}] {info['purity']:7} {info['resolution']:>9} {dest.name}")
+                page += 1
     log(f"done: {len(have)} images, {size / 1024**3:.1f} GB in {lib}")
 
 
-def rotate_purities(cfg):
-    # Only rotate purities that are both configured and allowed by the current mode.
-    configured = tuple(p for p in ("sfw", "sketchy", "nsfw") if p in cfg["purities"])
-    f = STATE / "mode"
-    if f.exists() and f.read_text().strip() == "sfw":
-        return ("sfw",) if "sfw" in configured else ()
-    return configured
+# ---- selection -------------------------------------------------------------
+
+def load_filter():
+    try:
+        f = json.loads(FILTER.read_text())
+        purities = [p for p in PURITIES if p in f.get("purities", [])]
+        if f.get("source") in SOURCES and purities:
+            return {"source": f["source"], "purities": purities}
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return dict(DEFAULT_FILTER, purities=list(DEFAULT_FILTER["purities"]))
+
+
+def save_filter(f):
+    STATE.mkdir(parents=True, exist_ok=True)
+    FILTER.write_text(json.dumps(f))
+
+
+def pools(cfg, filt):
+    """[(library name, files, weight)] for the chosen source, with the mixed split applied."""
+    if filt["source"] == "mixed":
+        real = cfg["mixed_real_share"]
+        spec = [("anime", 100 - real), ("real", real)]
+    else:
+        spec = [(filt["source"], 100)]
+    libs = libraries(cfg)
+    out = []
+    for name, weight in spec:
+        if weight <= 0:
+            continue
+        files = library_files(libs[name], filt["purities"])
+        if files:
+            out.append((name, files, weight))
+    return out
+
+
+def choose(cfg, filt):
+    """Next wallpaper: each library works through a shuffled bag, so nothing repeats until all have shown."""
+    key = json.dumps([filt["source"], filt["purities"]])
+    options = []
+    for name, files, weight in pools(cfg, filt):
+        valid = {str(p) for p in files}
+        if valid:
+            options.append((name, valid, weight))
+    if not options:
+        return None
+    saved = json.loads(QUEUE.read_text()) if QUEUE.exists() else {}
+    bags = saved.get("bags", {}) if saved.get("key") == key else {}
+    name, valid, _ = random.choices(options, weights=[o[2] for o in options])[0]
+    bag = [b for b in bags.get(name, []) if b in valid]
+    if not bag:
+        bag = sorted(valid)
+        random.shuffle(bag)
+    pick = bag.pop()
+    bags[name] = bag
+    STATE.mkdir(parents=True, exist_ok=True)
+    QUEUE.write_text(json.dumps({"key": key, "bags": bags}))
+    return pick
+
+
+def show(path):
+    subprocess.run([str(SWITCHWALL), "--image", path], env=hypr_env(), check=True,
+                   stdout=subprocess.DEVNULL)
 
 
 def hypr_env():
@@ -209,52 +286,81 @@ def hypr_env():
     return env
 
 
-def next_wallpaper(cfg):
-    purities = rotate_purities(cfg)
-    pools = [(name, library_files(lib, purities), share)
-             for name, lib, _, _, _, share, _ in sources(cfg)]
-    pools = [p for p in pools if p[1] and p[2] > 0]
-    if not pools:
-        sys.exit("library is empty, run: animewall fetch")
-    name, files, _ = random.choices(pools, weights=[p[2] for p in pools])[0]
-    STATE.mkdir(parents=True, exist_ok=True)
-    qfile = STATE / f"queue-{name}.json"
-    queue = json.loads(qfile.read_text()) if qfile.exists() else []
-    valid = {str(p) for p in files}
-    queue = [q for q in queue if q in valid]
-    if not queue:  # shuffle bag: every image shows once before any repeats
-        queue = sorted(valid)
-        random.shuffle(queue)
-    pick = queue.pop()
-    qfile.write_text(json.dumps(queue))
-    subprocess.run([str(SWITCHWALL), "--image", pick], env=hypr_env(), check=True,
-                   stdout=subprocess.DEVNULL)
+# ---- commands --------------------------------------------------------------
+
+def cmd_next(cfg):
+    filt = load_filter()
+    pick = choose(cfg, filt)
+    if pick is None:
+        notify(f"No wallpapers for {filt['source']} ({', '.join(filt['purities'])}). Download some first.",
+               urgent=True)
+        return 1
+    show(pick)
     print(pick)
+    return 0
 
 
-def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+def cmd_source(cfg, args):
+    if len(args) != 1 or args[0] not in SOURCES:
+        print(f"usage: animewall source {'|'.join(SOURCES)}")
+        return 2
+    filt = load_filter()
+    filt["source"] = args[0]
+    pick = choose(cfg, filt)
+    if pick is None:
+        notify(f"No wallpapers for {args[0]} with {', '.join(filt['purities'])} yet.", urgent=True)
+        return 1
+    save_filter(filt)
+    show(pick)
+    return 0
+
+
+def cmd_purity(cfg, args):
+    if args == ["all"]:
+        wanted = list(PURITIES)
+    elif args and all(a in PURITIES for a in args):
+        wanted = [p for p in PURITIES if p in args]
+    else:
+        print("usage: animewall purity sfw|sketchy|nsfw ... | all")
+        return 2
+    filt = load_filter()
+    filt["purities"] = wanted
+    pick = choose(cfg, filt)
+    if pick is None:
+        notify(f"No wallpapers for {filt['source']} with {', '.join(wanted)} yet.", urgent=True)
+        return 1
+    save_filter(filt)
+    show(pick)
+    return 0
+
+
+def cmd_status(cfg):
+    filt = load_filter()
+    pool = sum(len(files) for _, files, _ in pools(cfg, filt))
+    print("source:", filt["source"], "| purities:", ", ".join(filt["purities"]), "| pool:", pool)
+    for name, lib in libraries(cfg).items():
+        print(f"{name:10}", ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITIES))
+    print("api key:", "set" if cfg["api_key"] else "missing")
+    return 0
+
+
+def main(argv):
+    cmd, args = (argv[0], argv[1:]) if argv else ("status", [])
     cfg = load_config()
+    if cmd == "status":
+        return cmd_status(cfg)
+    if cmd == "next":
+        return cmd_next(cfg)
     if cmd == "fetch":
         fetch(cfg)
-    elif cmd == "next":
-        next_wallpaper(cfg)
-    elif cmd == "mode" and len(sys.argv) == 3 and sys.argv[2] in ("sfw", "all"):
-        STATE.mkdir(parents=True, exist_ok=True)
-        (STATE / "mode").write_text(sys.argv[2])
-        for q in STATE.glob("queue*.json"):
-            q.unlink()
-        next_wallpaper(cfg)
-    elif cmd == "status":
-        for name, lib, _, _, _, share, _ in sources(cfg):
-            counts = ", ".join(f"{p} {len(library_files(lib, (p,)))}" for p in PURITY_BITS)
-            print(f"{name:6} ({share}% of rotations): {counts}")
-        print("rotating:", ", ".join(rotate_purities(cfg)))
-        print("api key:", "set" if cfg["api_key"] else "missing (no NSFW)")
-    else:
-        print(__doc__)
-        sys.exit(1)
+        return 0
+    if cmd == "source":
+        return cmd_source(cfg, args)
+    if cmd in ("purity", "mode"):  # "mode" kept as an alias
+        return cmd_purity(cfg, args)
+    print(__doc__)
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv[1:]))
