@@ -1,0 +1,30 @@
+The animewall panel in illogical-impulse: its open state in GlobalStates
+and its loader in the ii panel family.
+Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
+
+--- a/GlobalStates.qml
++++ b/GlobalStates.qml
+@@ -29,6 +29,7 @@
+     property bool superDown: false
+     property bool superReleaseMightTrigger: true
+     property bool wallpaperSelectorOpen: false
++    property bool animewallOpen: false
+     property bool workspaceShowNumbers: false
+ 
+     onSidebarRightOpenChanged: {
+--- a/panelFamilies/IllogicalImpulseFamily.qml
++++ b/panelFamilies/IllogicalImpulseFamily.qml
+@@ -22,6 +22,7 @@
+ import qs.modules.ii.overlay
+ import qs.modules.ii.verticalBar
+ import qs.modules.ii.wallpaperSelector
++import qs.modules.ii.animewall
+ 
+ Scope {
+     PanelLoader { extraCondition: !Config.options.bar.vertical; component: Bar {} }
+@@ -44,4 +45,5 @@
+     PanelLoader { component: SidebarRight {} }
+     PanelLoader { extraCondition: Config.options.bar.vertical; component: VerticalBar {} }
+     PanelLoader { component: WallpaperSelector {} }
++    PanelLoader { component: AnimewallPanel {} }
+ }
