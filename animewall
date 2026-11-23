@@ -10,6 +10,7 @@
   animewall open                          open the current wallpaper's Wallhaven page
   animewall interval 5|10|15|30|60        minutes between automatic changes
   animewall pause | resume                stop or restart the rotation timer
+  animewall download start|stop|run       background download service, or download in the foreground
   animewall status                        the selection and the library sizes
   animewall fetch                         grow the libraries in the foreground
 
@@ -501,6 +502,22 @@ def cmd_timer(action):
     return r.returncode
 
 
+def cmd_download(cfg, args):
+    action = args[0] if args else ""
+    if action == "start":
+        systemctl("start", "--no-block", "animewall-fetch.service")
+        print("download started")
+    elif action == "stop":
+        systemctl("stop", "animewall-fetch.service")
+        print("download stopped")
+    elif action == "run":
+        fetch(cfg)
+    else:
+        print("usage: animewall download start|stop|run")
+        return 2
+    return 0
+
+
 def cmd_status(cfg):
     filt = load_filter()
     pool = sum(len(files) for _, files, _ in pools(cfg, filt))
@@ -535,6 +552,8 @@ def main(argv):
         return cmd_interval(args)
     if cmd in ("pause", "resume"):
         return cmd_timer("stop" if cmd == "pause" else "start")
+    if cmd == "download":
+        return cmd_download(cfg, args)
     print(__doc__)
     return 2
 
