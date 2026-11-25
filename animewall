@@ -335,7 +335,10 @@ def choose(cfg, filt, exclude=None):
 
 
 def show(path):
-    subprocess.run([str(SWITCHWALL), "--image", path], env=hypr_env(), check=True,
+    # No prompts from an automatic change: switchwall's "Upscale?" question waits for a
+    # click that never comes, and each rotation left one stuck behind (51 by 25 Nov).
+    env = {**hypr_env(), "SWITCHWALL_NO_PROMPTS": "1"}
+    subprocess.run([str(SWITCHWALL), "--image", path], env=env, check=True,
                    stdout=subprocess.DEVNULL)
 
 

@@ -1,0 +1,16 @@
+switchwall skips the upscale prompt when SWITCHWALL_NO_PROMPTS is set,
+which animewall does for every change it makes.
+Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
+
+--- a/scripts/colors/switchwall.sh
++++ b/scripts/colors/switchwall.sh
+@@ -192,7 +192,8 @@
+             exit 0
+         fi
+ 
+-        check_and_prompt_upscale "$imgpath" &
++        # Automatic changes (animewall) set SWITCHWALL_NO_PROMPTS: nobody is there to answer.
++        [[ -n "${SWITCHWALL_NO_PROMPTS:-}" ]] || check_and_prompt_upscale "$imgpath" &
+         kill_existing_mpvpaper
+ 
+         if is_video "$imgpath"; then
