@@ -1,0 +1,33 @@
+switchwall's prompts give up after five minutes instead of waiting for a
+click forever.
+Made against end-4/dots-hyprland 6eb590b1, dots/.config/quickshell/ii.
+
+--- a/scripts/colors/switchwall.sh
++++ b/scripts/colors/switchwall.sh
+@@ -74,7 +74,7 @@
+             img_height=$(identify -format "%h" "$img" 2>/dev/null)
+         fi
+         if [[ "$img_width" -lt "$min_width_desired" || "$img_height" -lt "$min_height_desired" ]]; then
+-            action=$(notify-send "Upscale?" \
++            action=$(timeout 300 notify-send "Upscale?" \
+                 "Image resolution (${img_width}x${img_height}) is lower than screen resolution (${min_width_desired}x${min_height_desired})" \
+                 -A "open_upscayl=Open Upscayl"\
+                 -a "Wallpaper switcher")
+@@ -82,7 +82,7 @@
+                 if command -v upscayl &>/dev/null; then
+                     nohup upscayl > /dev/null 2>&1 &
+                 else
+-                    action2=$(notify-send \
++                    action2=$(timeout 300 notify-send \
+                         -a "Wallpaper switcher" \
+                         -c "im.error" \
+                         -A "install_upscayl=Install Upscayl (Arch)" \
+@@ -208,7 +208,7 @@
+             if [ ${#missing_deps[@]} -gt 0 ]; then
+                 echo "Missing deps: ${missing_deps[*]}"
+                 echo "Arch: sudo pacman -S ${missing_deps[*]}"
+-                action=$(notify-send \
++                action=$(timeout 300 notify-send \
+                     -a "Wallpaper switcher" \
+                     -c "im.error" \
+                     -A "install_arch=Install (Arch)" \
