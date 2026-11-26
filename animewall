@@ -6,6 +6,8 @@
                                           choose which library rotates
   animewall purity sfw|sketchy|nsfw ...   choose which purities rotate ("all" for every one)
   animewall favorite                      add or remove the current wallpaper from favorites
+  animewall filter hide|unhide TAG ...    hide wallpapers with any of these tags, or show them again
+  animewall filter [clear]                list the hidden tags, or hide nothing
   animewall ban                           take the current wallpaper out for good (moved, not deleted)
   animewall open                          open the current wallpaper's Wallhaven page
   animewall interval 5|10|15|30|60        minutes between automatic changes
@@ -35,6 +37,7 @@ CONFIG = HOME / ".config/animewall/config.toml"
 STATE = HOME / ".local/state/animewall"
 FILTER = STATE / "filter.json"
 QUEUE = STATE / "queue.json"
+TAGS = STATE / "tags.json"
 REJECTED = STATE / "rejected.json"
 BANNED = STATE / "banned"
 UNIT_DIR = HOME / ".config/systemd/user"
@@ -48,7 +51,7 @@ PURITIES = ("sfw", "sketchy", "nsfw")
 PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
 SOURCES = ("anime", "real", "mixed", "favorites")
 INTERVALS = (5, 10, 15, 30, 60)
-DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"]}
+DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"], "hide": []}
 WALLHAVEN_FILE = re.compile(r"wallhaven-([a-z0-9]+)\.\w+$", re.I)
 
 DEFAULT_CONFIG = """\
@@ -205,7 +208,7 @@ def fetch(cfg):
         log(f"nothing to download for {filt['source']} ({', '.join(filt['purities'])})")
         return
     # An empty selection shows its first download right away instead of waiting for the timer.
-    state = {"waiting": not pools(cfg, filt)}
+    state = {"waiting": not pools(cfg, filt), "hide": hide_pattern(filt)}
     for name, lib, cats, max_images, max_gb, queries in targets:
         for purity in purities:
             log(f"== {name} / {purity} ==")
@@ -249,6 +252,10 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity, stat
                         continue
                     if info["purity"] != purity:
                         continue
+                    names = tag_names(info)
+                    if is_hidden(state["hide"], names):
+                        log(f"skip {wid}: has a hidden tag")
+                        continue
                     dest = folder / Path(urllib.parse.urlparse(info["path"]).path).name
                     tmp = dest.with_suffix(dest.suffix + ".part")
                     try:
@@ -263,6 +270,7 @@ def fetch_source(cfg, lib, categories, max_images, max_gb, queries, purity, stat
                         tmp.unlink(missing_ok=True)
                         log(f"download failed {wid}: {e}")
                         continue
+                    record_tags({wid: names})
                     have.add(wid)
                     count += 1
                     size += info["file_size"]
@@ -280,16 +288,50 @@ def load_filter():
     try:
         f = json.loads(FILTER.read_text())
         purities = [p for p in PURITIES if p in f.get("purities", [])]
+        hide = sorted({str(t).strip().lower() for t in f.get("hide", []) if str(t).strip()})
         if f.get("source") in SOURCES and purities:
-            return {"source": f["source"], "purities": purities}
+            return {"source": f["source"], "purities": purities, "hide": hide}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    return dict(DEFAULT_FILTER, purities=list(DEFAULT_FILTER["purities"]))
+    return dict(DEFAULT_FILTER, purities=list(DEFAULT_FILTER["purities"]), hide=[])
 
 
 def save_filter(f):
     STATE.mkdir(parents=True, exist_ok=True)
     FILTER.write_text(json.dumps(f))
+
+
+def load_tags():
+    """{wallhaven id: tag names} for the wallpapers whose tags are known."""
+    try:
+        return json.loads(TAGS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def record_tags(entries):
+    # Merged into what is on disk right before writing: the download and the tag
+    # lookup can both be writing at once.
+    index = load_tags() | entries
+    STATE.mkdir(parents=True, exist_ok=True)
+    tmp = TAGS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index, sort_keys=True))
+    tmp.replace(TAGS)
+
+
+def tag_names(info):
+    return [t["name"].lower() for t in info.get("tags", []) if t.get("name")]
+
+
+def hide_pattern(filt):
+    """The hidden tags as whole words on a tag name, plurals included, or None."""
+    if not filt["hide"]:
+        return None
+    return re.compile(r"\b(" + "|".join(re.escape(t) for t in filt["hide"]) + r")s?\b")
+
+
+def is_hidden(pattern, names):
+    return bool(pattern) and any(pattern.search(n.replace("_", " ")) for n in names)
 
 
 def pools(cfg, filt):
@@ -300,11 +342,14 @@ def pools(cfg, filt):
     else:
         spec = [(filt["source"], 100)]
     libs = libraries(cfg)
+    pattern = hide_pattern(filt)
+    index = load_tags() if pattern else {}
     out = []
     for name, weight in spec:
         if weight <= 0:
             continue
-        files = library_files(libs[name], filt["purities"])
+        files = [p for p in library_files(libs[name], filt["purities"])
+                 if not is_hidden(pattern, index.get(wallhaven_id(str(p)), []))]
         if files:
             out.append((name, files, weight))
     return out
@@ -454,6 +499,30 @@ def cmd_purity(cfg, args):
     return apply_selection(cfg, filt)
 
 
+def cmd_filter(cfg, args):
+    filt = load_filter()
+    action = args[0] if args else ""
+    tags = {t.strip().lower() for t in args[1:] if t.strip()}
+    if action == "hide" and tags:
+        filt["hide"] = sorted(set(filt["hide"]) | tags)
+    elif action == "unhide" and tags:
+        filt["hide"] = [t for t in filt["hide"] if t not in tags]
+    elif action == "clear" and not tags:
+        filt["hide"] = []
+    elif action:
+        print("usage: animewall filter [hide|unhide TAG ... | clear]")
+        return 2
+    if action:
+        save_filter(filt)
+        cur = current_path()
+        if cur and is_hidden(hide_pattern(filt), load_tags().get(wallhaven_id(cur) or "", [])):
+            pick = choose(cfg, filt, exclude=cur)
+            if pick:
+                show(pick)
+    print("hidden tags:", ", ".join(filt["hide"]) or "none")
+    return 0
+
+
 def cmd_favorite(cfg):
     cur = current_path()
     loc = locate(cfg, cur)
@@ -575,6 +644,7 @@ def status_data(cfg):
     cur = current_path()
     loc = locate(cfg, cur)
     wid = wallhaven_id(cur)
+    pool = sum(len(files) for _, files, _ in pools(cfg, filt))
     counts = {name: {p: len(library_files(lib, (p,))) for p in PURITIES}
               for name, lib in libraries(cfg).items()}
     return {
@@ -588,7 +658,11 @@ def status_data(cfg):
         } if cur else None,
         "source": filt["source"],
         "purities": filt["purities"],
-        "pool": sum(len(files) for _, files, _ in pools(cfg, filt)),
+        "pool": pool,
+        "filter": {
+            "hide": filt["hide"],
+            "hidden": sum(len(files) for _, files, _ in pools(cfg, dict(filt, hide=[]))) - pool,
+        },
         "timer": {
             "active": unit_state("animewall.timer") == "active",
             "interval_min": interval_minutes(),
@@ -611,6 +685,8 @@ def cmd_status(cfg, args):
     print("current:", f"{cur['name']} ({cur['library'] or 'outside libraries'}, "
           f"{cur['purity'] or '-'}{', favorite' if cur['favorite'] else ''})" if cur else "none")
     print("source:", data["source"], "| purities:", ", ".join(data["purities"]), "| pool:", data["pool"])
+    f = data["filter"]
+    print("hidden tags:", ", ".join(f["hide"]) or "none", f"| {f['hidden']} wallpapers hidden")
     t = data["timer"]
     print("rotation:", "active" if t["active"] else "paused", f"| every {t['interval_min']} min",
           f"| next {t['next'] or '-'}")
@@ -635,6 +711,8 @@ def main(argv):
         return cmd_source(cfg, args)
     if cmd in ("purity", "mode"):  # "mode" kept as an alias
         return cmd_purity(cfg, args)
+    if cmd == "filter":
+        return cmd_filter(cfg, args)
     if cmd == "favorite":
         return cmd_favorite(cfg)
     if cmd == "ban":
