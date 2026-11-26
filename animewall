@@ -14,6 +14,7 @@
   animewall pause | resume                stop or restart the rotation timer
   animewall download start|stop|run       background download service, or download in the foreground
   animewall status [--json]               state, used by the quickshell panel
+  animewall tag                           look up the tags of wallpapers downloaded before the filter
   animewall fetch                         grow the libraries in the foreground
 
 Config: ~/.config/animewall/config.toml (created on first run).
@@ -180,6 +181,7 @@ def add_rejected(wid):
 
 
 FETCH_UNIT = "animewall-fetch.service"
+TAG_UNIT = "animewall-tag.service"
 
 
 def downloading():
@@ -189,6 +191,36 @@ def downloading():
 def start_download():
     """Start the download service, or restart it so it follows a changed selection."""
     systemctl("restart" if downloading() else "start", "--no-block", FETCH_UNIT)
+
+
+def untagged(cfg):
+    """Wallhaven ids in the libraries whose tags were never recorded."""
+    index = load_tags()
+    return sorted({wid for lib in libraries(cfg).values() for p in library_files(lib)
+                   if (wid := wallhaven_id(str(p))) and wid not in index})
+
+
+def cmd_tag(cfg):
+    """Record the tags of every library wallpaper that has none, so the filter can see them."""
+    todo = untagged(cfg)
+    api = Api(cfg["api_key"])
+    log(f"{len(todo)} wallpapers to look up")
+    found = {}
+    for n, wid in enumerate(todo, 1):
+        try:
+            found[wid] = tag_names(api.get(f"/w/{wid}")["data"])
+        except urllib.error.HTTPError as e:
+            if e.code == 404:  # gone from Wallhaven: nothing to match, so stop asking
+                found[wid] = []
+            else:
+                log(f"skip {wid}: {e}")
+        except Exception as e:
+            log(f"skip {wid}: {e}")
+        if len(found) >= 25 or n == len(todo):
+            record_tags(found)
+            found = {}
+            log(f"[{n}/{len(todo)}] looked up")
+    return 0
 
 
 def download_targets(cfg, filt):
@@ -514,6 +546,8 @@ def cmd_filter(cfg, args):
         return 2
     if action:
         save_filter(filt)
+        if filt["hide"] and untagged(cfg) and unit_state(TAG_UNIT) not in ("active", "activating"):
+            systemctl("start", "--no-block", TAG_UNIT)  # older wallpapers have no tags yet
         cur = current_path()
         if cur and is_hidden(hide_pattern(filt), load_tags().get(wallhaven_id(cur) or "", [])):
             pick = choose(cfg, filt, exclude=cur)
@@ -662,6 +696,8 @@ def status_data(cfg):
         "filter": {
             "hide": filt["hide"],
             "hidden": sum(len(files) for _, files, _ in pools(cfg, dict(filt, hide=[]))) - pool,
+            "untagged": len(untagged(cfg)),
+            "tagging": unit_state(TAG_UNIT) in ("active", "activating"),
         },
         "timer": {
             "active": unit_state("animewall.timer") == "active",
@@ -686,7 +722,8 @@ def cmd_status(cfg, args):
           f"{cur['purity'] or '-'}{', favorite' if cur['favorite'] else ''})" if cur else "none")
     print("source:", data["source"], "| purities:", ", ".join(data["purities"]), "| pool:", data["pool"])
     f = data["filter"]
-    print("hidden tags:", ", ".join(f["hide"]) or "none", f"| {f['hidden']} wallpapers hidden")
+    print("hidden tags:", ", ".join(f["hide"]) or "none", f"| {f['hidden']} wallpapers hidden",
+          f"| {f['untagged']} not looked up yet" + (", looking up now" if f["tagging"] else ""))
     t = data["timer"]
     print("rotation:", "active" if t["active"] else "paused", f"| every {t['interval_min']} min",
           f"| next {t['next'] or '-'}")
@@ -704,6 +741,8 @@ def main(argv):
         return cmd_status(cfg, args)
     if cmd == "next":
         return cmd_next(cfg)
+    if cmd == "tag":
+        return cmd_tag(cfg)
     if cmd == "fetch":
         fetch(cfg)
         return 0
