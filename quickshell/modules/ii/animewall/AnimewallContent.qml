@@ -30,7 +30,18 @@ Rectangle {
         const libs = Animewall.libraries;
         const total = name => Object.values(libs[name] ?? {}).reduce((a, b) => a + b, 0);
         return `Anime ${total("anime")} · Real ${total("real")} · Favorites ${total("favorites")} · `
-            + `Banned ${Animewall.banned} · ${Animewall.pool} in this selection`;
+            + `Banned ${Animewall.banned} · ${Animewall.pool} in this selection`
+            + (Animewall.hiddenCount > 0 ? ` · ${Animewall.hiddenCount} hidden` : "");
+    }
+
+    function filterLine() {
+        if (Animewall.hiddenTags.length === 0)
+            return "Wallpapers with any of these tags stay out of the rotation and the downloads.";
+        if (Animewall.untagged === 0)
+            return "Click a tag to show its wallpapers again.";
+        return Animewall.tagging
+            ? `Looking up the tags of ${Animewall.untagged} older wallpapers, so the filter can see them.`
+            : `${Animewall.untagged} older wallpapers have no tags yet; hiding a tag looks them up.`;
     }
 
     ColumnLayout {
@@ -202,6 +213,43 @@ Rectangle {
             }
         }
 
+        SectionLabel {
+            text: "Hide tags"
+        }
+        // Each tag is as wide as its own text and the Flow wraps them in the
+        // row's width, so sizes still only flow down from the panel.
+        Flow {
+            Layout.fillWidth: true
+            visible: Animewall.hiddenTags.length > 0
+            spacing: 6
+
+            Repeater {
+                model: Animewall.hiddenTags
+                delegate: TagChip {
+                    required property string modelData
+                    label: modelData
+                    onClicked: Animewall.unhideTag(modelData)
+                }
+            }
+        }
+        MaterialTextField {
+            id: tagField
+            Layout.fillWidth: true
+            placeholderText: "Tag to hide, then Enter"
+            onAccepted: {
+                Animewall.hideTag(text);
+                text = "";
+            }
+            Keys.onEscapePressed: GlobalStates.animewallOpen = false
+        }
+        StyledText {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            text: root.filterLine()
+            font.pixelSize: Appearance.font.pixelSize.smaller
+            color: Appearance.colors.colSubtext
+        }
+
         // Rotation and downloads
         RowLayout {
             Layout.fillWidth: true
@@ -278,6 +326,40 @@ Rectangle {
                     text: chip.label
                     font.pixelSize: Appearance.font.pixelSize.small
                     color: chip.textColor
+                }
+            }
+        }
+    }
+
+    // A hidden tag; clicking it shows its wallpapers again.
+    component TagChip: RippleButton {
+        id: tagChip
+        property string label: ""
+
+        implicitWidth: tagRow.implicitWidth + 24
+        implicitHeight: 30
+        buttonRadius: Appearance.rounding.full
+        colBackground: Appearance.colors.colSecondaryContainer
+        colBackgroundHover: Appearance.colors.colSecondaryContainerHover
+        colRipple: Appearance.colors.colSecondaryContainerActive
+
+        contentItem: Item {
+            Row {
+                id: tagRow
+                anchors.centerIn: parent
+                spacing: 4
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: tagChip.label
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colOnSecondaryContainer
+                }
+                MaterialSymbol {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "close"
+                    iconSize: 16
+                    color: Appearance.colors.colOnSecondaryContainer
                 }
             }
         }

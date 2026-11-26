@@ -29,6 +29,10 @@ Singleton {
     readonly property bool rotating: timer?.active ?? false
     readonly property int interval: timer?.interval_min ?? 5
     readonly property string nextChange: timer?.next ?? ""
+    readonly property var hiddenTags: status?.filter?.hide ?? []
+    readonly property int hiddenCount: status?.filter?.hidden ?? 0
+    readonly property int untagged: status?.filter?.untagged ?? 0
+    readonly property bool tagging: status?.filter?.tagging ?? false
 
     readonly property var sources: [
         { id: "anime", label: "Anime", icon: "animation" },
@@ -61,6 +65,16 @@ Singleton {
         if (wanted.length === 0)
             return; // keep at least one purity selected
         run("purity", ...wanted);
+    }
+
+    function hideTag(tag) {
+        const t = tag.trim().toLowerCase();
+        if (t.length > 0)
+            run("filter", "hide", t);
+    }
+
+    function unhideTag(tag) {
+        run("filter", "unhide", tag);
     }
 
     function skip() {
