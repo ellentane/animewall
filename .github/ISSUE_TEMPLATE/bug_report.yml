@@ -1,0 +1,29 @@
+name: Bug report
+description: Something in animewall does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: animewall status
+      description: The output of `animewall status`.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Hyprland and illogical-impulse
+      description: "`hyprctl version | head -1`, and the dots-hyprland commit your ii comes from if you know it."
+      placeholder: Hyprland 0.57.2, dots-hyprland 6eb590b1
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "For the rotation or downloads: `journalctl --user -u animewall -u animewall-fetch -n 50`. For the panel: `qs -c ii log | tail -50`. For an install: the output of `./install.sh`."
+      render: text
