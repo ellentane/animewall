@@ -52,7 +52,7 @@ PURITIES = ("sfw", "sketchy", "nsfw")
 PURITY_BITS = {"sfw": "100", "sketchy": "010", "nsfw": "001"}
 SOURCES = ("anime", "real", "mixed", "favorites")
 INTERVALS = (5, 10, 15, 30, 60)
-DEFAULT_FILTER = {"source": "anime", "purities": ["sketchy"], "hide": []}
+DEFAULT_FILTER = {"source": "anime", "purities": ["sfw"], "hide": []}
 WALLHAVEN_FILE = re.compile(r"wallhaven-([a-z0-9]+)\.\w+$", re.I)
 
 DEFAULT_CONFIG = """\
